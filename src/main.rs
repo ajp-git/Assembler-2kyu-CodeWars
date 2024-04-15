@@ -1,26 +1,26 @@
-use std::{collections::HashMap, fmt::Error};
+use std::{collections::HashMap};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Register {
-    pub val:i32,
+    pub val:i64,
 }
 
 impl Register {
-    fn set_value(&mut self, new_val:i32 ) -> i32 {
+    fn set_value(&mut self, new_val:i64 ) -> i64 {
         self.val=new_val;
         self.val
     }
 
-    fn get_value(&self ) -> i32 {
+    fn get_value(&self ) -> i64 {
         self.val
     }
 
-    fn inc(&mut self) -> i32 {
+    fn inc(&mut self) -> i64 {
         self.val+=1;
         self.val
     }
 
-    fn dec(&mut self) -> i32 {
+    fn dec(&mut self) -> i64 {
         self.val-=1;
         self.val
     }
@@ -28,7 +28,7 @@ impl Register {
 
 #[derive(PartialEq,Debug,Clone, Copy)]
 enum Param {
-    Val(i32),
+    Val(i64),
     Register(char),  
   } 
 
@@ -120,7 +120,7 @@ impl Cpu {
         Ok(address)
     }
 
-    fn get_register_value(&mut self, r:char) -> Result<i32, String>{
+    fn get_register_value(&mut self, r:char) -> Result<i64, String>{
         
         if let Ok(reg)=self.parse_register(r) {
             return Ok(reg.get_value());
@@ -128,21 +128,21 @@ impl Cpu {
         Err(format!("Get register {} value error", r))
     }
 
-    fn get_param_value(&self, p:Param) -> Result<i32, String>{
+    fn get_param_value(&self, p:Param) -> Result<i64, String>{
         match p {
             Param::Register(r) => { Ok(self.regs.get(&r).unwrap().val) },
             Param::Val(v) => Ok(v),
         }
     }
     
-    fn set_register_value(&mut self,r:char, val:i32) {
+    fn set_register_value(&mut self,r:char, val:i64) {
         let mut reg=self.regs.entry(r).or_insert(Register{val:0});
         reg.set_value(val);
         
     }
 
     fn parse_param(&self, input:&str) -> Result<Param,String> {
-        if let Ok(val)=input.parse::<i32>() {
+        if let Ok(val)=input.parse::<i64>() {
             return Ok(Param::Val(val));
         } else if input.len()==1 && input.chars().next().unwrap().is_alphabetic() {
             let reg=input.chars().next().unwrap();
@@ -163,13 +163,17 @@ impl Cpu {
     }
 
 }
-fn main() {
 
-let mut cpu=Cpu::new();
-    match cpu.load_code("mov a 5") {
-        Ok(_) => println!("Code ok"),
-        Err(e) => println!("Errr : {:?}", e),
-    };
+fn simple_assembler(program: Vec<&str>) -> HashMap<String, i64> {
+    let mut registers = HashMap::new();
+
+    let mut cpu = Cpu::new();
+    cpu.load_code_from_vec(&program);
+    cpu.run();
+
+    cpu.regs.into_iter().for_each(|(c,reg)|{registers.insert(c.to_string(), reg.val);});
+
+    registers
 }
 
 #[cfg(test)]
