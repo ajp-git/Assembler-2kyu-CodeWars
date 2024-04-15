@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Error};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Register {
     pub val:i32,
 }
@@ -26,15 +26,17 @@ impl Register {
     }
 }
 
+#[derive(PartialEq,Debug,Clone, Copy)]
 enum Param {
     Val(i32),
     Register(char),  
   } 
-  
-enum Command {
-    Move(Param,Register),
-    Inc(Register),
-    Dec(Register),
+
+#[derive(PartialEq,Debug)]
+  enum Command {
+    Move(char, Param),
+    Inc(char),
+    Dec(char),
     Jnz(Param,Param),
 }
 
@@ -51,26 +53,34 @@ impl Cpu {
         Cpu { regs: registers, code: Vec::new() }
     }
 
-    fn load_code(&mut self, txt: &str) -> Result<(), String> {
+    fn load_code_from_vec(&mut self, code:&[&str]) -> Result<(), String>{
 
-        for line in txt.lines() {
+        self.load_code(code.join("\n").as_str())
+
+    }
+
+    fn load_code(&mut self, txt: &str) -> Result<(), String> {
+        println!("Input to load_code:\n{}", txt); // Debug output
+
+        for (i, line) in txt.lines().enumerate() {
+            println!("Processing line {}: {}", i, line); // Debug output
             let parts:Vec<&str>=line.split_whitespace().collect();
             match parts.as_slice() {
                 ["inc", x] => {
-                    let reg=self.parse_register(x)?;
+                    let reg=x.chars().next().unwrap();
                     self.code.push(Command::Inc(reg));    
                 },
                 
                 ["dec", x] => {
-                    let reg=self.parse_register(x)?;
-                    self.code.push(Command::Inc(reg));    
+                    let reg=x.chars().next().unwrap();
+                    self.code.push(Command::Dec(reg));    
                 },
                 
                 // two params
                 ["mov", x, y] => {
-                    let param = self.parse_param(&x)?;
-                    let reg = self.parse_register(&y)?;
-                    self.code.push(Command::Move(param, reg));
+                    let reg=x.chars().next().unwrap();
+                    let param = self.parse_param(&y)?;
+                    self.code.push(Command::Move(reg, param));
 
                 },
                 ["jnz", x, y] =>{
@@ -81,10 +91,36 @@ impl Cpu {
                 _ => panic!("Unknown instruction {}", line),
             }
         }
-        Err("Not implemented".to_string())
+        Ok(())
     }
 
-    fn get_register_value(&mut self, r:&str) -> Result<i32, String>{
+    fn run (&mut self) -> Result<usize,String>{
+        let mut address=0;
+
+        while address < self.code.len(){
+            match &self.code[address] {
+
+                Command::Dec(a) => {self.parse_register(*a)?.dec();},
+                Command::Inc(a) => {self.parse_register(*a)?.inc();},
+                Command::Move(a, b) => {self.set_register_value(*a,self.get_param_value(*b)?);},
+                Command::Jnz(a, b) => {
+                    let condition=self.get_param_value(*a)? as usize;
+                    let jump = self.get_param_value(*b)?;
+                    if condition !=0 {
+                        if jump < 0 && address< jump.abs() as usize {
+                            return Err(format!("Bad jump from {} -> {}", address, jump));
+                        }
+                        address = address.wrapping_add(jump as usize);
+                        continue;
+                    }
+                },
+            }
+            address+=1;
+        }
+        Ok(address)
+    }
+
+    fn get_register_value(&mut self, r:char) -> Result<i32, String>{
         
         if let Ok(reg)=self.parse_register(r) {
             return Ok(reg.get_value());
@@ -99,11 +135,10 @@ impl Cpu {
         }
     }
     
-    fn set_register_value(&mut self,r:char, val:i32) -> Result<i32, String>{
-        match self.regs.get_mut(&r) {
-            Some(reg) => Ok(reg.set_value(val)),
-            None => Err(format!("Unknown register {}", r)),
-        }
+    fn set_register_value(&mut self,r:char, val:i32) {
+        let mut reg=self.regs.entry(r).or_insert(Register{val:0});
+        reg.set_value(val);
+        
     }
 
     fn parse_param(&self, input:&str) -> Result<Param,String> {
@@ -117,11 +152,11 @@ impl Cpu {
         }
     }
 
-    fn parse_register(&mut self, input: &str) -> Result<Register, String> {
-        if input.len()==1 && input.chars().next().unwrap().is_alphabetic()  {
-            let reg_name= input.chars().next().unwrap();
-            let reg= self.regs.entry(reg_name).or_insert_with(|| Register{val:0});
-            return Ok(*reg);
+    fn parse_register(&mut self, input: char) -> Result<&mut Register, String> {
+        if input.is_alphabetic()  {
+//            let reg_name= input.chars().next().unwrap();
+            let reg= self.regs.entry(input).or_insert_with(|| Register{val:0});
+            return Ok(reg);
         } else {
             return Err(format!("Unknown register {}", input));
         }
@@ -139,6 +174,8 @@ let mut cpu=Cpu::new();
 
 #[cfg(test)]
 mod tests {
+
+    use crate::Param;
 
     use super::Register;
     use super::Cpu;
@@ -176,9 +213,38 @@ mod tests {
     }
     
     #[test]
-    fn test_cpu_mov() {
-        let mut register = Register { val: 42 };
-        register.dec();
-        assert_eq!(register.val, 41);
+    fn test_cpu_load_code_inc() {
+        let mut cpu = init_cpu();
+        cpu.load_code("inc a");
+        let reg=cpu.parse_register('a').unwrap();
+        assert_eq!(cpu.code[0], Command::Inc('a'));
     }
+
+    #[test]
+    fn test_cpu_load_code_mov_regs() {
+        let mut cpu = init_cpu();
+        cpu.load_code("mov a b");
+        let reg_2=cpu.parse_param("b").unwrap();
+        assert_eq!(cpu.code[0], Command::Move('a', reg_2));
+    }
+
+
+    #[test]
+    fn test_cpu_load_code_mov_val() {
+        let mut cpu = init_cpu();
+        cpu.load_code("mov b -1");
+        let val=cpu.parse_param("-1").unwrap();
+        assert_eq!(cpu.code[0], Command::Move('b', val));
+    }
+    
+    #[test]
+    fn test_cpu_load_code_from_vec() {
+        let mut cpu = init_cpu();
+        let code = ["mov a 5", "inc a", "dec a", "dec a", "jnz a -1", "inc a"];
+        cpu.load_code_from_vec(&code);
+        cpu.run();
+        assert_eq!(cpu.get_register_value('a'), Ok(1));
+    }
+
+    
 }
