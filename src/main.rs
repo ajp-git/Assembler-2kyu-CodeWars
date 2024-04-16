@@ -43,7 +43,7 @@ enum Param {
     Register(char),  
   } 
 
-#[derive(PartialEq,Debug)]
+#[derive(PartialEq,Debug, Clone)]
   enum Command {
     Move(char, Param),
     Inc(char),
@@ -56,19 +56,33 @@ enum Param {
     Label(String),      // label: - define a label position (label = identifier + ":", an identifier being a string that does not match any other command). Jump commands and call are aimed to these labels positions in the program.
     Jmp(String),        // jmp lbl - jumps to the label lbl.
     Cmp(Param,Param),   // cmp x, y - compares x (either an integer or the value of a register) and y (either an integer or the value of a register). The result is used in the conditional jumps (jne, je, jge, jg, jle and jl)
+    Jne(String),        //jne lbl - jump to the label lbl if the values of the previous cmp command were not equal.
+    Je(String),         // je lbl - jump to the label lbl if the values of the previous cmp command were equal.
+    Jge(String),        // jge lbl - jump to the label lbl if x was greater or equal than y in the previous cmp command.
+    Jg(String),         // jg lbl - jump to the label lbl if x was greater than y in the previous cmp command.
+    Jle(String),        // jle lbl - jump to the label lbl if x was less or equal than y in the previous cmp command.
+    Jl(String),         // jl lbl - jump to the label lbl if x was less than y in the previous cmp command.
+}
+
+#[derive(Debug, PartialEq)]
+enum Comparison {
+    Equal,
+    Less,
+    Greater
 }
 
 struct Cpu{
     regs:HashMap<char, Register>,
     code:Vec<Command>,
-    compare:bool,
+    compare:Option<Comparison>,
+    labels:HashMap<String,usize>,
 }
 
 impl Cpu {
     fn new() -> Self {
 
         let registers:HashMap<char, Register>=HashMap::new();
-        Cpu { regs: registers, code: Vec::new(), compare:false }
+        Cpu { regs: registers, code: Vec::new(), compare:None, labels:HashMap::new() }
     }
 
     fn load_code_from_vec(&mut self, code:&[&str]) -> Result<(), String>{
@@ -121,6 +135,35 @@ impl Cpu {
                 ["div", x, y] => {
                     self.code.push(Command::Div(reg(x), param(y)))
                 },
+                ["cmp", x, y] => {
+                    self.code.push(Command::Cmp(param(x), param(y)))
+                },
+                ["jmp", x] => {
+                    self.code.push(Command::Jmp(x.to_string()));
+                },
+                [label] if label.ends_with(':')=> {
+                    let label_name = label.trim_end_matches(':');
+                    self.labels.insert(label_name.to_string(), i);
+                    self.code.push(Command::Label(label_name.to_string()));
+                },
+                ["jne", x] => {
+                    self.code.push(Command::Jne(x.to_string()));
+                },
+                ["je", x] => {
+                    self.code.push(Command::Je(x.to_string()));
+                },
+                ["jge", x] => {
+                    self.code.push(Command::Jge(x.to_string()));
+                },
+                ["jg", x] => {
+                    self.code.push(Command::Jg(x.to_string()));
+                },
+                ["jle", x] => {
+                    self.code.push(Command::Jle(x.to_string()));
+                },
+                ["jl", x] => {
+                    self.code.push(Command::Jl(x.to_string()));
+                },
                 _ => panic!("Unknown instruction {}", line),
             }
         }
@@ -131,20 +174,21 @@ impl Cpu {
         let mut address=0;
 
         while address < self.code.len(){
-            match &self.code[address] {
+            let code= self.code[address].clone();
+            match code {
 
                 Command::Dec(a) => {
-                    self.parse_register(*a)?.dec();
+                    self.parse_register(&a)?.dec();
                 },
                 Command::Inc(a) => {
-                    self.parse_register(*a)?.inc();
+                    self.parse_register(&a)?.inc();
                 },
                 Command::Move(a, b) => {
-                    self.set_register_value(*a,self.get_param_value(*b)?);
+                    self.set_register_value(a,self.get_param_value(&b)?);
                 },
                 Command::Jnz(a, b) => {
-                    let condition=self.get_param_value(*a)? as usize;
-                    let jump = self.get_param_value(*b)?;
+                    let condition=self.get_param_value(&a)? as usize;
+                    let jump = self.get_param_value(&b)?;
                     if condition !=0 {
                         if jump < 0 && address< jump.abs() as usize {
                             return Err(format!("Bad jump from {} -> {}", address, jump));
@@ -154,21 +198,63 @@ impl Cpu {
                     }
                 },
                 Command::Add(r, p) => {
-                    let val = self.get_param_value(*p)?;
-                    self.parse_register(*r)?.add(val);
+                    let val = self.get_param_value(&p)?;
+                    self.parse_register(&r)?.add(val);
                 },
                 Command::Sub(r, p) => {
-                    let val = self.get_param_value(*p)?;
-                    self.parse_register(*r)?.sub(val);
+                    let val = self.get_param_value(&p)?;
+                    self.parse_register(&r)?.sub(val);
                 },
                 Command::Mul(r, p) => {
-                    let val = self.get_param_value(*p)?;
-                    self.parse_register(*r)?.mul(val);
+                    let val = self.get_param_value(&p)?;
+                    self.parse_register(&r)?.mul(val);
                 },
                 Command::Div(r, p) => {
-                    let val = self.get_param_value(*p)?;
-                    self.parse_register(*r)?.div(val);
+                    let val = self.get_param_value(&p)?;
+                    self.parse_register(&r)?.div(val);
                 },
+                Command::Cmp(p1, p2) => {
+                    let val_1 = self.get_param_value(&p1)?;
+                    let val_2 = self.get_param_value(&p2)?;
+                    if val_1==val_2 {self.compare=Some(Comparison::Equal);}
+                    else if val_1<val_2 { self.compare=Some(Comparison::Less);}
+                    else { self.compare=Some(Comparison::Greater);}
+                },
+                Command::Label(x) => {},
+                Command::Jmp(x) => {
+                    address=self.get_label_address(&x); continue;
+                },
+                Command::Jne(x) => {
+                    if self.compare!=None && self.compare!=Some(Comparison::Equal) {
+                        address=self.get_label_address(&x); continue;
+                    }
+                },
+                Command::Je(x) => {
+                    if self.compare==Some(Comparison::Equal) {
+                        address=self.get_label_address(&x); continue;
+                    }
+                },
+                Command::Jge(x) => {
+                    if self.compare==Some(Comparison::Equal) || self.compare==Some(Comparison::Greater) {
+                        address=self.get_label_address(&x); continue;
+                    }
+                },
+                Command::Jg(x) => {
+                    if self.compare==Some(Comparison::Greater) {
+                        address=self.get_label_address(&x); continue;
+                    }
+                },
+                Command::Jle(x) => {
+                    if self.compare==Some(Comparison::Equal) || self.compare==Some(Comparison::Less) {
+                        address=self.get_label_address(&x); continue;
+                    }
+                },
+                Command::Jl(x) => {
+                    if self.compare==Some(Comparison::Less) {
+                        address=self.get_label_address(&x); continue;
+                    }
+                },
+
                 _ => todo!(),
             }
             address+=1;
@@ -176,7 +262,7 @@ impl Cpu {
         Ok(address)
     }
 
-    fn get_register_value(&mut self, r:char) -> Result<i64, String>{
+    fn get_register_value(&mut self, r:&char) -> Result<i64, String>{
         
         if let Ok(reg)=self.parse_register(r) {
             return Ok(reg.get_value());
@@ -184,10 +270,10 @@ impl Cpu {
         Err(format!("Get register {} value error", r))
     }
 
-    fn get_param_value(&self, p:Param) -> Result<i64, String>{
+    fn get_param_value(&self, p:&Param) -> Result<i64, String>{
         match p {
             Param::Register(r) => { Ok(self.regs.get(&r).unwrap().val) },
-            Param::Val(v) => Ok(v),
+            Param::Val(v) => Ok(*v),
         }
     }
     
@@ -197,14 +283,18 @@ impl Cpu {
         
     }
 
-    fn parse_register(&mut self, input: char) -> Result<&mut Register, String> {
+    fn parse_register(&mut self, input: &char) -> Result<&mut Register, String> {
         if input.is_alphabetic()  {
 //            let reg_name= input.chars().next().unwrap();
-            let reg= self.regs.entry(input).or_insert_with(|| Register{val:0});
+            let reg= self.regs.entry(*input).or_insert_with(|| Register{val:0});
             return Ok(reg);
         } else {
             return Err(format!("Unknown register {}", input));
         }
+    }
+
+    fn get_label_address (&self, label:&String) -> usize {
+        *self.labels.get(label).unwrap()
     }
 
 }
@@ -290,7 +380,7 @@ mod tests {
     fn test_cpu_load_code_inc() {
         let mut cpu = init_cpu();
         cpu.load_code("inc a");
-        let reg=cpu.parse_register('a').unwrap();
+        let reg=cpu.parse_register(&'a').unwrap();
         assert_eq!(cpu.code[0], Command::Inc('a'));
     }
 
@@ -301,7 +391,7 @@ mod tests {
         let code = ["mov a 5", "inc a", "dec a", "dec a", "jnz a -1", "inc a"];
         cpu.load_code_from_vec(&code);
         cpu.run();
-        assert_eq!(cpu.get_register_value('a'), Ok(1));
+        assert_eq!(cpu.get_register_value(&'a'), Ok(1));
     }
     #[test]
     fn test_cpu_operations() {
@@ -309,7 +399,16 @@ mod tests {
         let code = ["mov a 5", "sub a 2", "add a 3", "mul a 2", "mov b a", "div a b"];
         cpu.load_code_from_vec(&code);
         cpu.run();
-        assert_eq!(cpu.get_register_value('a'), Ok(1));
+        assert_eq!(cpu.get_register_value(&'a'), Ok(1));
+    }
+
+    #[test]
+    fn test_labels() {
+        let mut cpu = init_cpu();
+        let code = ["coucou:", "mov a 3", "first:", "second:"];
+        cpu.load_code_from_vec(&code);
+        cpu.run();
+        assert_eq!(*cpu.labels.get(&"second".to_string()).unwrap(), 3 as usize);
     }
 
     
