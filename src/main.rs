@@ -15,14 +15,25 @@ impl Register {
         self.val
     }
 
-    fn inc(&mut self) -> i64 {
+    fn inc(&mut self) {
         self.val+=1;
-        self.val
     }
 
-    fn dec(&mut self) -> i64 {
+    fn dec(&mut self) {
         self.val-=1;
-        self.val
+    }
+
+    fn add(&mut self, val:i64) {
+        self.val+=val;
+    }
+    fn sub(&mut self, val:i64) {
+        self.val-=val;
+    }
+    fn mul(&mut self, val:i64) {
+        self.val*=val;
+    }
+    fn div(&mut self, val:i64) {
+        self.val/=val;
     }
 }
 
@@ -38,19 +49,26 @@ enum Param {
     Inc(char),
     Dec(char),
     Jnz(Param,Param),
+    Add(char,Param),    // add x, y - add the content of the register x with y (either an integer or the value of a register) and stores the result in x (i.e. register[x] += y).
+    Sub(char, Param),   // sub x, y - subtract y (either an integer or the value of a register) from the register x and stores the result in x (i.e. register[x] -= y).
+    Mul(char, Param),   // mul x, y - same with multiply (i.e. register[x] *= y).
+    Div(char, Param),   // div x, y - same with integer division (i.e. register[x] /= y).
+    Label(String),      // label: - define a label position (label = identifier + ":", an identifier being a string that does not match any other command). Jump commands and call are aimed to these labels positions in the program.
+    Jmp(String),        // jmp lbl - jumps to the label lbl.
+    Cmp(Param,Param),   // cmp x, y - compares x (either an integer or the value of a register) and y (either an integer or the value of a register). The result is used in the conditional jumps (jne, je, jge, jg, jle and jl)
 }
 
 struct Cpu{
     regs:HashMap<char, Register>,
     code:Vec<Command>,
-
+    compare:bool,
 }
 
 impl Cpu {
     fn new() -> Self {
 
         let registers:HashMap<char, Register>=HashMap::new();
-        Cpu { regs: registers, code: Vec::new() }
+        Cpu { regs: registers, code: Vec::new(), compare:false }
     }
 
     fn load_code_from_vec(&mut self, code:&[&str]) -> Result<(), String>{
@@ -62,31 +80,46 @@ impl Cpu {
     fn load_code(&mut self, txt: &str) -> Result<(), String> {
         println!("Input to load_code:\n{}", txt); // Debug output
 
+        let reg = |x:&str| x.chars().next().unwrap();
+        
+        let param = |y:&str|{
+            if let Ok(val)=y.parse::<i64>() {
+                return Param::Val(val);
+            } else if y.len()==1 && y.chars().next().unwrap().is_alphabetic() {
+                let reg=y.chars().next().unwrap();
+                return Param::Register(reg);
+            } else {
+                panic!("Bad param {}", y);
+            }
+        };
+    
         for (i, line) in txt.lines().enumerate() {
             println!("Processing line {}: {}", i, line); // Debug output
             let parts:Vec<&str>=line.split_whitespace().collect();
             match parts.as_slice() {
                 ["inc", x] => {
-                    let reg=x.chars().next().unwrap();
-                    self.code.push(Command::Inc(reg));    
+                    self.code.push(Command::Inc(reg(x)));    
                 },
-                
                 ["dec", x] => {
-                    let reg=x.chars().next().unwrap();
-                    self.code.push(Command::Dec(reg));    
+                    self.code.push(Command::Dec(reg(x)));    
                 },
-                
-                // two params
                 ["mov", x, y] => {
-                    let reg=x.chars().next().unwrap();
-                    let param = self.parse_param(&y)?;
-                    self.code.push(Command::Move(reg, param));
-
+                    self.code.push(Command::Move(reg(x), param(y)));
                 },
                 ["jnz", x, y] =>{
-                    let param =self.parse_param(&x)?;
-                    let jump=self.parse_param(&y)?;
-                    self.code.push(Command::Jnz(param, jump));
+                    self.code.push(Command::Jnz(param(x), param(y)));
+                },
+                ["add", x, y] => {
+                    self.code.push(Command::Add(reg(x), param(y)))
+                },
+                ["sub", x, y] => {
+                    self.code.push(Command::Sub(reg(x), param(y)))
+                },
+                ["mul", x, y] => {
+                    self.code.push(Command::Mul(reg(x), param(y)))
+                },
+                ["div", x, y] => {
+                    self.code.push(Command::Div(reg(x), param(y)))
                 },
                 _ => panic!("Unknown instruction {}", line),
             }
@@ -100,9 +133,15 @@ impl Cpu {
         while address < self.code.len(){
             match &self.code[address] {
 
-                Command::Dec(a) => {self.parse_register(*a)?.dec();},
-                Command::Inc(a) => {self.parse_register(*a)?.inc();},
-                Command::Move(a, b) => {self.set_register_value(*a,self.get_param_value(*b)?);},
+                Command::Dec(a) => {
+                    self.parse_register(*a)?.dec();
+                },
+                Command::Inc(a) => {
+                    self.parse_register(*a)?.inc();
+                },
+                Command::Move(a, b) => {
+                    self.set_register_value(*a,self.get_param_value(*b)?);
+                },
                 Command::Jnz(a, b) => {
                     let condition=self.get_param_value(*a)? as usize;
                     let jump = self.get_param_value(*b)?;
@@ -114,6 +153,23 @@ impl Cpu {
                         continue;
                     }
                 },
+                Command::Add(r, p) => {
+                    let val = self.get_param_value(*p)?;
+                    self.parse_register(*r)?.add(val);
+                },
+                Command::Sub(r, p) => {
+                    let val = self.get_param_value(*p)?;
+                    self.parse_register(*r)?.sub(val);
+                },
+                Command::Mul(r, p) => {
+                    let val = self.get_param_value(*p)?;
+                    self.parse_register(*r)?.mul(val);
+                },
+                Command::Div(r, p) => {
+                    let val = self.get_param_value(*p)?;
+                    self.parse_register(*r)?.div(val);
+                },
+                _ => todo!(),
             }
             address+=1;
         }
@@ -139,17 +195,6 @@ impl Cpu {
         let mut reg=self.regs.entry(r).or_insert(Register{val:0});
         reg.set_value(val);
         
-    }
-
-    fn parse_param(&self, input:&str) -> Result<Param,String> {
-        if let Ok(val)=input.parse::<i64>() {
-            return Ok(Param::Val(val));
-        } else if input.len()==1 && input.chars().next().unwrap().is_alphabetic() {
-            let reg=input.chars().next().unwrap();
-            return Ok(Param::Register(reg));
-        } else {
-            return Err(format!("Bad param {}", input));
-        }
     }
 
     fn parse_register(&mut self, input: char) -> Result<&mut Register, String> {
@@ -217,6 +262,31 @@ mod tests {
     }
     
     #[test]
+    fn test_register_mul() {
+        let mut register = Register { val: 42 };
+        register.mul(2);
+        assert_eq!(register.val, 84);
+    }
+    #[test]
+    fn test_register_div() {
+        let mut register = Register { val: 42 };
+        register.div(2);
+        assert_eq!(register.val, 21);
+    }
+    #[test]
+    fn test_register_add() {
+        let mut register = Register { val: 42 };
+        register.add(2);
+        assert_eq!(register.val, 44);
+    }
+    #[test]
+    fn test_register_sub() {
+        let mut register = Register { val: 42 };
+        register.sub(2);
+        assert_eq!(register.val, 40);
+    }
+    
+    #[test]
     fn test_cpu_load_code_inc() {
         let mut cpu = init_cpu();
         cpu.load_code("inc a");
@@ -224,27 +294,19 @@ mod tests {
         assert_eq!(cpu.code[0], Command::Inc('a'));
     }
 
-    #[test]
-    fn test_cpu_load_code_mov_regs() {
-        let mut cpu = init_cpu();
-        cpu.load_code("mov a b");
-        let reg_2=cpu.parse_param("b").unwrap();
-        assert_eq!(cpu.code[0], Command::Move('a', reg_2));
-    }
-
-
-    #[test]
-    fn test_cpu_load_code_mov_val() {
-        let mut cpu = init_cpu();
-        cpu.load_code("mov b -1");
-        let val=cpu.parse_param("-1").unwrap();
-        assert_eq!(cpu.code[0], Command::Move('b', val));
-    }
     
     #[test]
     fn test_cpu_load_code_from_vec() {
         let mut cpu = init_cpu();
         let code = ["mov a 5", "inc a", "dec a", "dec a", "jnz a -1", "inc a"];
+        cpu.load_code_from_vec(&code);
+        cpu.run();
+        assert_eq!(cpu.get_register_value('a'), Ok(1));
+    }
+    #[test]
+    fn test_cpu_operations() {
+        let mut cpu = init_cpu();
+        let code = ["mov a 5", "sub a 2", "add a 3", "mul a 2", "mov b a", "div a b"];
         cpu.load_code_from_vec(&code);
         cpu.run();
         assert_eq!(cpu.get_register_value('a'), Ok(1));
