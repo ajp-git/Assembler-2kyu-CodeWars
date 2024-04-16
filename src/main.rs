@@ -1,5 +1,7 @@
 use std::{collections::HashMap};
 
+use regex::Regex;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Register {
     pub val:i64,
@@ -56,33 +58,44 @@ enum Param {
     Label(String),      // label: - define a label position (label = identifier + ":", an identifier being a string that does not match any other command). Jump commands and call are aimed to these labels positions in the program.
     Jmp(String),        // jmp lbl - jumps to the label lbl.
     Cmp(Param,Param),   // cmp x, y - compares x (either an integer or the value of a register) and y (either an integer or the value of a register). The result is used in the conditional jumps (jne, je, jge, jg, jle and jl)
-    Jne(String),        //jne lbl - jump to the label lbl if the values of the previous cmp command were not equal.
+    Jne(String),        // jne lbl - jump to the label lbl if the values of the previous cmp command were not equal.
     Je(String),         // je lbl - jump to the label lbl if the values of the previous cmp command were equal.
     Jge(String),        // jge lbl - jump to the label lbl if x was greater or equal than y in the previous cmp command.
     Jg(String),         // jg lbl - jump to the label lbl if x was greater than y in the previous cmp command.
     Jle(String),        // jle lbl - jump to the label lbl if x was less or equal than y in the previous cmp command.
     Jl(String),         // jl lbl - jump to the label lbl if x was less than y in the previous cmp command.
+    Call(String),       // call lbl - call to the subroutine identified by lbl. When a ret is found in a subroutine, the instruction pointer should return to the instruction next to this call command.
+    Ret,                // ret - when a ret is found in a subroutine, the instruction pointer should return to the instruction that called the current function.
+    Msg(String),   // msg 'Register: ', x - this instruction stores the output of the program. It may contain text strings (delimited by single quotes) and registers. The number of arguments isn't limited and will vary, depending on the program.
+    End,                // end - this instruction indicates that the program ends correctly, so the stored output is returned (if the program terminates without this instruction it should return the default output: see below).
+    Comment,            // ; comment - comments should not be taken in consideration during the execution of the program.
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum Comparison {
     Equal,
     Less,
     Greater
 }
 
+#[derive(Clone)]
 struct Cpu{
     regs:HashMap<char, Register>,
     code:Vec<Command>,
     compare:Option<Comparison>,
     labels:HashMap<String,usize>,
+    sub_calls:Vec<usize>,
 }
 
 impl Cpu {
     fn new() -> Self {
 
         let registers:HashMap<char, Register>=HashMap::new();
-        Cpu { regs: registers, code: Vec::new(), compare:None, labels:HashMap::new() }
+        Cpu { regs: registers,
+             code: Vec::new(),
+             compare:None,
+             labels:HashMap::new(),
+            sub_calls: Vec::new() }
     }
 
     fn load_code_from_vec(&mut self, code:&[&str]) -> Result<(), String>{
@@ -106,10 +119,18 @@ impl Cpu {
                 panic!("Bad param {}", y);
             }
         };
-    
+
+        let re_trim=Regex::new(r"\s+").unwrap();
         for (i, line) in txt.lines().enumerate() {
+            let line=re_trim.replace_all(line, " ");
             println!("Processing line {}: {}", i, line); // Debug output
+            if line.starts_with("msg") {
+                self.code.push(Command::Msg(line.chars().skip(4).map(|c| c).collect::<String>()));
+                continue;
+            }
+            if line.len()==0{continue;}
             let parts:Vec<&str>=line.split_whitespace().collect();
+
             match parts.as_slice() {
                 ["inc", x] => {
                     self.code.push(Command::Inc(reg(x)));    
@@ -164,17 +185,37 @@ impl Cpu {
                 ["jl", x] => {
                     self.code.push(Command::Jl(x.to_string()));
                 },
+                ["call", x] => {
+                    self.code.push(Command::Call(x.to_string()));
+                },
+                ["ret"] => {
+                    self.code.push(Command::Ret);
+                },
+                ["end"] => {
+                    self.code.push(Command::End);
+                },
+                [";"] => {
+                    self.code.push(Command::Comment);
+                },
                 _ => panic!("Unknown instruction {}", line),
             }
         }
         Ok(())
     }
 
-    fn run (&mut self) -> Result<usize,String>{
+    fn print_status(self: &Self, address: &usize, code:&Command){
+        println!("Address : {}\t{:?}", address,code);
+        for (c,reg) in &   self.regs {
+            println!("{} : {}", c, reg.val);
+        }
+    }
+    fn run (&mut self) -> Result<String,String>{
         let mut address=0;
+        let mut out:String=String::new();
 
         while address < self.code.len(){
             let code= self.code[address].clone();
+            //self.print_status(&address, &code);
             match code {
 
                 Command::Dec(a) => {
@@ -254,12 +295,45 @@ impl Cpu {
                         address=self.get_label_address(&x); continue;
                     }
                 },
-
+                Command::Call(x) => {
+                    self.sub_calls.push(address);
+                    address=self.get_label_address(&x.to_string());
+                    continue;
+                },
+                Command::Ret => {
+                    address=self.sub_calls.pop().unwrap();
+                },
+                Command::Msg(x) => {
+                    print!("Msg : ");
+                    let mut s = String::new();
+                    let mut in_text=false;
+                    for c in x.chars() {
+                        match c {
+                            '\'' => {
+                                in_text=!in_text;
+                            },
+                            _ if in_text => s.push(c),
+                            'a'..='z' if in_text==false => {
+                                let o = format!("{}", self.get_register_value(&c).unwrap_or(0));
+                                s.push_str(o.as_str());
+                            },
+                            _ => {
+                                println!("in message, '{}' ignored",c);
+                            },
+                            
+                        }
+                    }
+                    out.push_str(s.as_str());
+                    println!("Current out :{}", out);
+                    
+//                    x.iter().for_each(|f|print!("{}", f));
+                },
+                Command::End => {return Ok(out)},
                 _ => todo!(),
             }
             address+=1;
         }
-        Ok(address)
+        Ok(out)
     }
 
     fn get_register_value(&mut self, r:&char) -> Result<i64, String>{
@@ -406,10 +480,46 @@ mod tests {
     fn test_labels() {
         let mut cpu = init_cpu();
         let code = ["coucou:", "mov a 3", "first:", "second:"];
-        cpu.load_code_from_vec(&code);
-        cpu.run();
+        let _ = cpu.load_code_from_vec(&code);
+        let _ = cpu.run();
         assert_eq!(*cpu.labels.get(&"second".to_string()).unwrap(), 3 as usize);
     }
 
+    #[test]
+    fn test_jump() {
+        let mut cpu = init_cpu();
+        let code = ["mov a 3", "coucou:", "dec a", "cmp a 0", "jne coucou", "end"];
+        let _ = cpu.load_code_from_vec(&code);
+        let _ = cpu.run();
+        assert_eq!(cpu.regs.get(&'a').unwrap().val, 0);
+    }
+    
+
+    #[test]
+    fn test_sub() {
+        let mut cpu = init_cpu();
+        let code = ["mov a 3", "coucou:","call sub_dec", "cmp a 0", "jne coucou", "end", "sub_dec:", "dec a", "ret"];
+        let _ = cpu.load_code_from_vec(&code);
+        let _ = cpu.run();
+        assert_eq!(cpu.regs.get(&'a').unwrap().val, 0);
+    }
+
+    #[test]
+    fn test_msg() {
+        let mut cpu = init_cpu();
+        let code = ["mov a 3", "mov b 2", "mov c 6", "msg   'mul(', a, ', ', b, ') = ', c        "];
+        let _ = cpu.load_code_from_vec(&code);
+        let out = cpu.run().unwrap();
+        assert_eq!(out, "mul(3, 2) = 6");
+    }
+    
+    #[test]
+    fn test_cw1() {
+        let mut cpu = init_cpu();
+        let code = "\n; My first program\nmov  a, 5\ninc  a\ncall function\nmsg  '(5+1)/2 = ', a    ; output message\nend\n\nfunction:\n    div  a, 2\n    ret\n";
+        let _ = cpu.load_code(&code);
+        let out = cpu.run().unwrap();
+        assert_eq!(out, "mul(3, 2) = 6");
+    }
     
 }
